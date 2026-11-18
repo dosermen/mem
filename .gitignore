@@ -1,0 +1,18 @@
+# local machine config (paths live here, never in git)
+SERVER/config.bat
+
+# python
+__pycache__/
+*.pyc
+
+# derived database - rebuilt by `python mem.py sync` from md files
+memory/memory.db
+memory/memory.db-wal
+memory/memory.db-shm
+
+# generated index + embed interlock (never hand-edit)
+memory/MEMORY.md
+memory/MEMORY.md.embed.lock
+
+# leftovers of atomic writes (tmp + os.replace) after a crash
+*.tmp-write
