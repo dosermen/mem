@@ -168,6 +168,21 @@ python mem.py recall "..."   # гибрид: bm25 0.45 + recency 0.20 + imp 0.10
 - Удаление обратимо (`forget` -> `restore`); версии неизменяемы (`update` -> supersedes).
 - Работает офлайн; embedding-сервер — улучшение, а не зависимость.
 
+## Auto-update (propagate)
+
+This repo is the **single source of truth** for `mem.py`; consumers keep a
+plain copy at their own path and never see git.
+
+- `propagate.txt` — one destination `mem.py` path per line (`#` = comment);
+  a new consumer project = one line.
+- `mem-propagate.ps1` — copies this repo's `mem.py` to every target and
+  verifies sha256. `-Check` reports drift only (exit 1, touches nothing).
+  Log: `mem-propagate.log` (gitignored).
+- `mem-update.ps1` — scheduled wrapper (Windows task, daily): `git pull`
+  **only when the working tree is clean** (dirty tree → SKIP, uncommitted
+  edits are never overwritten), ff-only, then propagates. Only what was
+  pushed here reaches consumers; rollback = `git revert` + next tick.
+
 ## License
 
 MIT — см. [LICENSE](LICENSE).
