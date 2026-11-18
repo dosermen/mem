@@ -166,7 +166,7 @@ python ..\mem.py recall "запрос"
 ## Бэкап
 
 Сам бэкап в эту папку не входит — это хостовый инструмент:
-`F:\AI\OLAMA\tools\mem-backup.ps1` (реестр корней — `tools\mem-backup-roots.txt`,
+`tools\mem-backup.ps1` хост-проекта (реестр корней — `tools\mem-backup-roots.txt`,
 запуск раз в сутки из Phone-Embed-Watchdog). Подробности и идея для переноса —
 в `../README.md`, раздел «Бэкап».
 

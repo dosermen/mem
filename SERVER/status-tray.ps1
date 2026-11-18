@@ -29,10 +29,12 @@ $port      = if ($env:SERVER_PORT) { $env:SERVER_PORT } else { 5031 }
 $phonePort = if ($env:SERVER_PHONE_PORT) { $env:SERVER_PHONE_PORT } else { 5131 }
 $sshPort   = if ($env:SERVER_SSH_PORT) { $env:SERVER_SSH_PORT } else { 8022 }
 $adb       = if ($env:SERVER_ADB) { $env:SERVER_ADB } else { "adb" }
-$memPy     = if ($env:SERVER_MEM_PY) { $env:SERVER_MEM_PY } else { "F:\AI\OLAMA\tools\mem.py" }
-$dbPath    = if ($env:SERVER_MEM_DB) { $env:SERVER_MEM_DB } else { "F:\AI\OLAMA\memory\memory.db" }
-$stampPath = if ($env:SERVER_MEM_STAMP) { $env:SERVER_MEM_STAMP } else { "F:\AI\OLAMA\logs\mem-backup.stamp" }
-$wdLog     = if ($env:SERVER_WATCHDOG_LOG) { $env:SERVER_WATCHDOG_LOG } else { "F:\AI\OLAMA\logs\phone-watchdog.log" }
+# portable defaults: relative to the module itself (config.bat overrides;
+# host paths live in the host's config, never in git)
+$memPy     = if ($env:SERVER_MEM_PY) { $env:SERVER_MEM_PY } else { Join-Path $PSScriptRoot "..\mem.py" }
+$dbPath    = if ($env:SERVER_MEM_DB) { $env:SERVER_MEM_DB } else { Join-Path $PSScriptRoot "..\memory\memory.db" }
+$stampPath = if ($env:SERVER_MEM_STAMP) { $env:SERVER_MEM_STAMP } else { Join-Path $PSScriptRoot "..\logs\mem-backup.stamp" }
+$wdLog     = if ($env:SERVER_WATCHDOG_LOG) { $env:SERVER_WATCHDOG_LOG } else { Join-Path $PSScriptRoot "..\logs\phone-watchdog.log" }
 $runLog    = "/sdcard/llama-run.log"
 
 function Get-Probe {
