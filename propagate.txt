@@ -1,0 +1,2 @@
+# mem.py destinations (one file per line). Source = mem.py in this repo.
+F:\AI\OLAMA\tools\mem.py

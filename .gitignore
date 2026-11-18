@@ -16,3 +16,6 @@ memory/MEMORY.md.embed.lock
 
 # leftovers of atomic writes (tmp + os.replace) after a crash
 *.tmp-write
+
+# auto-update machinery logs (mem-propagate.ps1 / mem-update.ps1)
+mem-propagate.log
