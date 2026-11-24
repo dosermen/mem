@@ -42,7 +42,7 @@ python mem.py recall "запрос"   # поиск
 | `list [--status active\|superseded\|deleted] [--type episodic]` | список записей; **без `--status` — ВСЕ статусы**, включая `deleted` |
 | `show <id\|файл>` | одна запись целиком |
 | `link <id\|файл> [12 15] [--off]` | связи записи: без ids — показ (исходящие `->` + входящие `<-`); с ids — добавить/снять у СУЩЕСТВУЮЩЕЙ записи без новой версии (правит только `related`); alias `links` |
-| `sync` | пересобрать БД из md (md = source of truth; БД всегда восстановима) |
+| `sync` | пересобрать БД из md (md = source of truth; БД всегда восстановима); **portable ids**: штампует `id: N` во frontmatter каждой записи — id и `related` переживают полную пересборку БД (WARNING только для легаси-файлов без `id:`; конфликт чужого id → переназначение + предупреждение) |
 | `embed [--force]` | наполнить вектора (нужен embedding-сервер) |
 | `index` | перегенерировать MEMORY.md (sync делает это уже сам) |
 | `serve` | MCP stdio-сервер (MEMv2): инструменты памяти для агентов — `remember/recall/search/update_memory/forget/restore/list/show/link`; корень проекта определяется иначе, чем у CLI (см. «Встраивание в любой проект») |

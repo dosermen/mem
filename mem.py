@@ -205,6 +205,61 @@ def write_md(path, fm, body):
         raise SystemExit(1)
 
 
+def fm_id(fm):
+    """Portable id from frontmatter ('id: 7', citation '7@v2' ok) or None
+    when absent/ambiguous (P1: ids must survive a full db rebuild)."""
+    ids = parse_ids(fm.get("id", ""))
+    return ids[0] if len(ids) == 1 else None
+
+
+def stamp_id(path, mem_id):
+    """Write/update the `id: N` line in an existing record's frontmatter.
+    Surgical line edit (keeps frontmatter lines that parse_md skips), same
+    atomic tmp+os.replace as write_md. Returns True when the file changed."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return False
+    m = re.match(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?(.*)$",
+                 text, re.S)
+    if not m:
+        return False
+    lines = m.group(1).splitlines()
+    want = f"id: {int(mem_id)}"
+    for i, ln in enumerate(lines):
+        if re.match(r"^id\s*:", ln):
+            if ln.split(":", 1)[1].strip() == str(int(mem_id)):
+                return False          # already correct: no write, no mtime bump
+            lines[i] = want
+            break
+    else:
+        lines.insert(0, want)
+    # read_text already normalized newlines; write back LF like write_md
+    text = "---\n" + "\n".join(lines) + "\n---\n" + m.group(2)
+    try:
+        tmp = path.with_name(path.name + ".tmp-write")
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"mem.py: cannot stamp id into {path}: {e}", file=sys.stderr)
+        return False
+    return True
+
+
+def _next_id(db):
+    """Next free record id: max of the table and the AUTOINCREMENT
+    sequence (explicit-id inserts must never hand out a taken rowid)."""
+    m = db.execute("SELECT COALESCE(MAX(id),0) m FROM memories") \
+        .fetchone()["m"]
+    try:
+        row = db.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name='memories'").fetchone()
+        s = row["seq"] if row else 0
+    except sqlite3.Error:
+        s = 0
+    return max(m, s) + 1
+
+
 def iter_memory_files():
     # explicit suffix check: rglob("*.md") is case-sensitive on POSIX, so a
     # NOTE.MD synced on Windows would vanish from `seen` on Linux and its row
@@ -517,10 +572,11 @@ def cmd_sync(args):
     # select-then-write INSERT (UNIQUE constraint failed) and the schema
     # steps above (round-2 audit). 30 s busy timeout backs it up.
     db.execute("BEGIN IMMEDIATE")
-    # ids are only renumbered when the table starts EMPTY (db deleted /
-    # fresh deploy rebuilt from md) - remember this for the honest warning
-    # below; a healthy incremental sync must stay silent (caught by test:
-    # the first version compared imported==total and screamed every time)
+    # ids survive even an EMPTY rebuild when frontmatter carries portable
+    # `id:` lines (P1); only legacy files without them renumber - the honest
+    # warning below counts those. A healthy incremental sync must stay silent
+    # (caught by test: the first version compared imported==total and
+    # screamed every time)
     n_before = db.execute("SELECT COUNT(*) c FROM memories").fetchone()["c"]
     seen = {}
     stats = {"imported": 0, "skipped": 0}
@@ -534,12 +590,44 @@ def cmd_sync(args):
         seen[f] = True
         parsed = parse_md(p)
         parsed_by_rel[f] = parsed
-        if not parsed:
+        if not parsed or "type" not in parsed[0] or "path" not in parsed[0]:
             stats["skipped"] += 1
+
+    # P1 pre-claim: raise the AUTOINCREMENT sequence above every id the
+    # frontmatter claims BEFORE any insert - otherwise a legacy row inserted
+    # first can eat rowid N that a later file's `id:` line owns, and a
+    # fresh rebuild would renumber despite portable ids.
+    explicit_max = 0
+    for parsed in parsed_by_rel.values():
+        if not parsed:
+            continue
+        fm, _ = parsed
+        if "type" not in fm or "path" not in fm:
+            continue
+        w = fm_id(fm)
+        if w and w > explicit_max:
+            explicit_max = w
+    if explicit_max:
+        try:
+            row = db.execute(
+                "SELECT seq FROM sqlite_sequence WHERE name='memories'"
+            ).fetchone()
+            cur = row["seq"] if row else 0
+            if cur < explicit_max:
+                if row:
+                    db.execute("UPDATE sqlite_sequence SET seq=?"
+                               " WHERE name='memories'", (explicit_max,))
+                else:
+                    db.execute("INSERT INTO sqlite_sequence(name,seq)"
+                               " VALUES('memories',?)", (explicit_max,))
+        except sqlite3.Error:
+            pass  # no AUTOINCREMENT bookkeeping yet: inserts bump it themselves
+
+    for f, parsed in parsed_by_rel.items():
+        if not parsed:
             continue
         fm, body = parsed
         if "type" not in fm or "path" not in fm:
-            stats["skipped"] += 1
             continue
         status = fm.get("status", "active")
         version = parse_version(fm.get("version", "1"))
@@ -553,25 +641,52 @@ def cmd_sync(args):
         vals = (fm["path"], fm["type"], body.strip(), status, version,
                 importance, fm.get("author", ""), fm.get("session", ""),
                 created, updated, related)
+        want = fm_id(fm)   # P1: frontmatter id is authoritative for NEW rows
         # select-then-write, NOT ON CONFLICT DO UPDATE: an UPSERT that hits
         # the file conflict still allocates a rowid first and bumps
         # sqlite_sequence (measured 16.11), so every sync of an N-row db
         # wasted N ids once the table became AUTOINCREMENT
         try:
-            if db.execute("SELECT 1 FROM memories WHERE file=?",
-                          (f,)).fetchone():
+            row = db.execute("SELECT id FROM memories WHERE file=?",
+                             (f,)).fetchone()
+            if row:
+                # existing row keeps its db id (vectors/related point at it);
+                # a stale frontmatter id is healed back by the stamp pass
+                if want is not None and want != row["id"]:
+                    print(f"sync: WARNING id mismatch on {f}: frontmatter "
+                          f"id {want} != db id {row['id']} - keeping db id, "
+                          f"frontmatter healed")
                 db.execute(
                     """UPDATE memories SET path=?,type=?,content=?,status=?,
                          version=?,importance=?,author=?,session=?,
                          created_at=?,updated_at=?,related=? WHERE file=?""",
                     (*vals, f))
             else:
-                db.execute(
-                    """INSERT INTO memories(file,path,type,content,status,
-                         version,importance,author,session,created_at,
-                         updated_at,related)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (f, *vals))
+                if want is not None:
+                    holder = db.execute(
+                        "SELECT file FROM memories WHERE id=?",
+                        (want,)).fetchone()
+                    if holder is not None:
+                        # two records claim one id (hand-copied md): keep the
+                        # holder, give this file a fresh id; the stamp pass
+                        # rewrites its frontmatter to match
+                        want = _next_id(db)
+                        print(f"sync: WARNING id conflict on {f}: "
+                              f"id already held by {holder['file']}, "
+                              f"reassigned to {want}")
+                    db.execute(
+                        """INSERT INTO memories(id,file,path,type,content,
+                             status,version,importance,author,session,
+                             created_at,updated_at,related)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (want, f, *vals))
+                else:
+                    db.execute(
+                        """INSERT INTO memories(file,path,type,content,status,
+                             version,importance,author,session,created_at,
+                             updated_at,related)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (f, *vals))
         except sqlite3.IntegrityError:
             # lost a race to a peer that inserted the same file between our
             # SELECT and INSERT (BEGIN IMMEDIATE makes this rare, not
@@ -624,6 +739,21 @@ def cmd_sync(args):
         "INSERT INTO memories_fts(text,mem_id) SELECT content,id FROM memories"
     )
     db.commit()
+    # P1 portable ids: stamp the durable db id into every record whose
+    # frontmatter lacks it (or carries a stale one) - doubles as the
+    # one-time migration for md written before ids lived in frontmatter.
+    # After commit so only durable ids reach the files; before the DB_PATH
+    # utime below so ensure_fresh never sees md newer than the db.
+    stamped = 0
+    for f, parsed in parsed_by_rel.items():
+        if not parsed or f not in id_by_file:
+            continue
+        if fm_id(parsed[0]) == id_by_file[f]:
+            continue
+        if stamp_id(MEM_DIR / f, id_by_file[f]):
+            stamped += 1
+    if stamped:
+        print(f"sync: stamped {stamped} record id(s) into frontmatter")
     # first-run marker for ensure_fresh + fold the WAL into the main file so
     # the db mtime actually advances (audit 16.11: an uncheckpointed WAL hid
     # the mtime and every recall repeated the full sync while a reader held
@@ -645,18 +775,24 @@ def cmd_sync(args):
         "SELECT COUNT(*) c FROM memories WHERE status='active'"
     ).fetchone()["c"]
     n_total = db.execute("SELECT COUNT(*) c FROM memories").fetchone()["c"]
-    # honest warning: rebuilding from an EMPTY index renumbers ids, so bare
-    # `related: N` values in frontmatter then point at different records
-    # (round-2 audit, portability finding #2 - design-level fix is deferred).
+    # honest warning: a full rebuild renumbers ids only for LEGACY records
+    # that carry related but no portable id in frontmatter (P1: files with
+    # `id:` are re-inserted under their own id, so their related survives;
+    # round-2 audit finding #2, fix shipped with portable ids).
     # n_before==0 is the real signal; an incremental sync has nothing to warn
     # about even when every file was re-imported.
     if n_before == 0 and n_total:
-        linked = db.execute(
-            "SELECT COUNT(*) c FROM memories WHERE related!=''"
-        ).fetchone()["c"]
-        if linked:
-            print(f"sync: WARNING full rebuild renumbers ids - {linked} "
-                  f"record(s) carry related ids that may now point elsewhere")
+        legacy_linked = 0
+        for f, parsed in parsed_by_rel.items():
+            if not parsed or f not in id_by_file:
+                continue
+            if (parse_ids(parsed[0].get("related", ""))
+                    and fm_id(parsed[0]) is None):
+                legacy_linked += 1
+        if legacy_linked:
+            print(f"sync: WARNING full rebuild renumbers ids - {legacy_linked} "
+                  f"record(s) carry related ids but no portable id - "
+                  f"related may now point elsewhere")
     write_index(db)  # MEMORY.md stays in sync automatically
     print(f"sync: {stats['imported']} imported, {stats['skipped']} skipped, "
           f"db={n_total} (active={n_active}) -> {DB_PATH}")
@@ -1771,6 +1907,9 @@ def cmd_update(args):
             return 1
         ver = parse_version(fm.get("version", "1"))
         new_fm = dict(fm)
+        # P1: the new version is a NEW row with its own id - copying the old
+        # id would make two files claim one id (sync would reassign it)
+        new_fm.pop("id", None)
         new_fm["supersedes"] = old_rel
         new_fm["updated"] = today()
         new_fm["status"] = "active"
