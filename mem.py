@@ -697,6 +697,20 @@ def artifacts_dir():
     return None
 
 
+def skip_artifact(rel):
+    r"""True for report paths excluded from scan/index/search: vendor dumps
+    under logs\ (node-pkg = extracted npm package - its node_modules READMEs
+    / CHANGELOGs are not project reports; 1035 wasted embed chunks, 24.11).
+    MEM_ARTIFACTS_SKIP = comma-separated substrings matched against the
+    relpath (both slashes); empty disables the filter entirely."""
+    pats = os.environ.get("MEM_ARTIFACTS_SKIP", "node-pkg")
+    if not pats:
+        return False
+    low = rel.replace("\\", "/").lower()
+    return any(p.strip() and p.strip().lower() in low
+               for p in pats.split(","))
+
+
 def artifact_chunks(text, size=None):
     """Split a report into ~size char chunks on paragraph boundaries
     (sweep 17.11: whole-file vectors blur a 24 KB report into one point)."""
@@ -741,7 +755,8 @@ def search_artifacts(query, limit=3, db=None, qvec=None):
             # suffix.lower(): rglob("*.md") is case-sensitive on POSIX - a
             # REPORT.MD was never found (round-2 audit, matches iter_memory_files)
             files = [f for f in root.rglob("*")
-                     if f.is_file() and f.suffix.lower() == ".md"]
+                     if f.is_file() and f.suffix.lower() == ".md"
+                     and not skip_artifact(str(f.relative_to(root)))]
             # freshest first + total byte budget: a logs\ full of old reports
             # must not be re-read in full on every recall (audit 16.11)
             files.sort(key=lambda f: -f.stat().st_mtime)
@@ -776,9 +791,10 @@ def search_artifacts(query, limit=3, db=None, qvec=None):
     if db is not None and qvec is not None:
         min_sim = env_float("MEM_ART_VEC_MIN", 0.35)
         try:
-            vrows = db.execute(
+            vrows = [vr for vr in db.execute(
                 "SELECT relpath, vec, chunk_text FROM art_vec WHERE model=?",
                 (EMBED_MODEL,)).fetchall()
+                if not skip_artifact(vr["relpath"])]
         except sqlite3.Error:
             vrows = []
         best = {}                        # relpath -> (cos, chunk_text)
@@ -1179,7 +1195,13 @@ def embed_artifacts(db):
     live = {}
     for f in files:
         try:
-            live[str(f.relative_to(root))] = (f, int(f.stat().st_mtime))
+            rel = str(f.relative_to(root))
+        except ValueError:
+            continue
+        if skip_artifact(rel):        # vendor dumps: never embed
+            continue
+        try:
+            live[rel] = (f, int(f.stat().st_mtime))
         except OSError:
             continue
     stored = {}
