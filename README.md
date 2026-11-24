@@ -4,6 +4,11 @@
 (Cline, OpenCode, Cursor, Claude Code, ...) получает долговременную память.
 Ничего не устанавливается: только Python 3.10+ (стандартная библиотека, 0 зависимостей).
 
+<img src="docs/memv2-arch.png" alt="MEMv2 architecture: MCP stdio server mem.py serve" width="640"> <img src="docs/mem-graph.png" alt="memory related-graph of active records" width="300">
+
+_Схема: MCP-сервер `mem.py serve` + CLI. Граф: связи активных записей памяти
+(рендер `docs/render-memv2.py` / `docs/render-memgraph.py`)._
+
 ```
 <project>\
   MEM\
