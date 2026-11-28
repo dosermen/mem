@@ -1,2 +1,6 @@
-# mem.py destinations (one file per line). Source = mem.py in this repo.
+# propagate targets, one destination per line, # = comment.
+#   <dst>                 -> source is mem.py (original format, unchanged)
+#   <src>::<dst>          -> source is <src> relative to this repo (28.11)
 F:\AI\OLAMA\tools\mem.py
+export-opencode-sessions.py::F:\AI\OLAMA\tools\export-opencode-sessions.py
+mem-sweep.ps1::F:\AI\OLAMA\tools\mem-sweep.ps1

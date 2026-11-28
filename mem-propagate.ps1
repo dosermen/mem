@@ -1,15 +1,18 @@
-# mem-propagate.ps1 - distribute mem.py from THIS repo to consumer copies.
-# Source of truth: this clone (git: dosermen/mem). Consumers keep a plain
-# copy at their own path and never see git.
+# mem-propagate.ps1 - distribute repo files to consumer copies.
+# Source of truth: this clone (git: dosermen/mem). Consumers keep plain
+# copies at their own paths and never see git.
 #   default     copy + sha256 verify, per-line report, append to log
 #   -Check      report only, touch nothing (exit 1 on drift)
-# targets: propagate.txt, one destination FILE per line, # = comment
+# targets: propagate.txt, one destination per line, # = comment:
+#   plain line       -> source is mem.py (backward compatible)
+#   <src>::<dst>     -> source is <src> relative to this repo (28.11: the
+#                       opencode session exporter + sweep wrapper ride along)
 param([switch]$Check)
 
 $ErrorActionPreference = 'Stop'
-$src     = Join-Path $PSScriptRoot "mem.py"
+$memSrc  = Join-Path $PSScriptRoot "mem.py"
 $targets = Join-Path $PSScriptRoot "propagate.txt"
-$log     = join-path $PSScriptRoot "mem-propagate.log"
+$log     = Join-Path $PSScriptRoot "mem-propagate.log"
 
 function Log($m) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $m"
@@ -17,31 +20,52 @@ function Log($m) {
     Write-Output $line
 }
 
-$srcHash = (Get-FileHash $src -Algorithm SHA256).Hash
+$hashCache = @{}
+function SrcHash($path) {
+    if (-not $hashCache.ContainsKey($path)) {
+        $hashCache[$path] = (Get-FileHash $path -Algorithm SHA256).Hash
+    }
+    return $hashCache[$path]
+}
+
 $drift = 0
 $done  = 0
 Get-Content $targets | ForEach-Object {
     $line = $_.Trim()
     if (-not $line -or $line.StartsWith("#")) { return }
-    if (-not (Test-Path $line)) {
-        if ($Check) { Log "MISSING  $line"; $script:drift++ }
+    # split "src::dst" (IndexOf, not Split: PS 5.1 = .NET Framework)
+    $srcPath = $memSrc
+    $dst = $line
+    $idx = $line.IndexOf("::")
+    if ($idx -ge 0) {
+        $srcPath = Join-Path $PSScriptRoot $line.Substring(0, $idx).Trim()
+        $dst = $line.Substring($idx + 2).Trim()
+    }
+    if (-not (Test-Path $srcPath)) {
+        Log "MISSING SRC  $srcPath"
+        $script:drift++
+        return
+    }
+    $srcHash = SrcHash $srcPath
+    if (-not (Test-Path $dst)) {
+        if ($Check) { Log "MISSING  $dst"; $script:drift++ }
         else {
-            $dir = Split-Path $line -Parent
+            $dir = Split-Path $dst -Parent
             if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-            Copy-Item $src $line -Force
-            $h = (Get-FileHash $line -Algorithm SHA256).Hash
-            if ($h -eq $srcHash) { Log "BOOTSTRAP $line (sha256 OK)"; $script:done++ }
-            else { Log "FAIL     $line (hash mismatch after copy)"; $script:drift++ }
+            Copy-Item $srcPath $dst -Force
+            $h = (Get-FileHash $dst -Algorithm SHA256).Hash
+            if ($h -eq $srcHash) { Log "BOOTSTRAP $dst (sha256 OK)"; $script:done++ }
+            else { Log "FAIL     $dst (hash mismatch after copy)"; $script:drift++ }
         }
         return
     }
-    $dstHash = (Get-FileHash $line -Algorithm SHA256).Hash
-    if ($dstHash -eq $srcHash) { Log "OK       $line"; return }
-    if ($Check) { Log "DRIFT    $line"; $script:drift++; return }
-    Copy-Item $src $line -Force
-    $h = (Get-FileHash $line -Algorithm SHA256).Hash
-    if ($h -eq $srcHash) { Log "UPDATED  $line (sha256 OK)"; $script:done++ }
-    else { Log "FAIL     $line (hash mismatch after copy)"; $script:drift++ }
+    $dstHash = (Get-FileHash $dst -Algorithm SHA256).Hash
+    if ($dstHash -eq $srcHash) { Log "OK       $dst"; return }
+    if ($Check) { Log "DRIFT    $dst"; $script:drift++; return }
+    Copy-Item $srcPath $dst -Force
+    $h = (Get-FileHash $dst -Algorithm SHA256).Hash
+    if ($h -eq $srcHash) { Log "UPDATED  $dst (sha256 OK)"; $script:done++ }
+    else { Log "FAIL     $dst (hash mismatch after copy)"; $script:drift++ }
 }
 
 if ($Check) {
